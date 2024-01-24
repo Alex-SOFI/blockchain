@@ -12,4 +12,8 @@ contract SofiToken is ERC20, Ownable {
   function mint(address _to, uint _amount) onlyOwner external {
     _mint(_to, _amount);
   }
+
+  function burn(address _to, uint _amount) onlyOwner external {
+    _burn(_to, _amount);
+  }
 }
