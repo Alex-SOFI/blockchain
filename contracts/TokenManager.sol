@@ -15,11 +15,14 @@ import '@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol';
 interface ISofiToken {
   function mint(address _to, uint _amount) external;
   function burn(address _to, uint _amount) external;
+  function totalSupply() view external returns(uint);
 }
 
 contract TokenManager is Ownable {
   using Math for uint;
-  ISofiToken private token;
+  uint256 constant MAX_INT = 2**256 - 1;
+
+  ISofiToken private sofiToken;
   IERC20 private usdcToken;
 
   ISwapRouter public immutable swapRouter;
@@ -30,90 +33,154 @@ contract TokenManager is Ownable {
   uint public entryFee = 5000;
   uint public baseFee = 1000000;
 
+  struct TokenOptions {
+    address factory;
+    address router;
+    address token;
+    uint24 poolFee;
+    uint share; // 1000 = 1%
+  }
+  mapping(address => TokenOptions) public tokensOptions;
+  address[] public tokens;
+
   constructor(IERC20 _usdcToken, ISwapRouter _swapRouter, IUniswapV3Factory _swapFactory) Ownable(msg.sender) {
     usdcToken = _usdcToken;
     swapRouter = _swapRouter;
     swapFactory = _swapFactory;
   }
 
-  function mint(uint _amountIn, uint24 _poolFee) public {
-    TransferHelper.safeTransferFrom(address(usdcToken), msg.sender, address(this), _amountIn);
-    TransferHelper.safeApprove(address(usdcToken), address(swapRouter), _amountIn);
-    address pool = swapFactory.getPool(
-      address(usdcToken),
-      address(SWAP_TOKEN),
-      _poolFee
+  function addTokenOption(address _factory, address _router, address _token, uint24 _poolFee, uint _share) public onlyOwner {
+    tokensOptions[_token] = TokenOptions(
+      _factory,
+      _router,
+      _token,
+      _poolFee,
+      _share
     );
-    TransferHelper.safeApprove(address(usdcToken), pool, _amountIn);
-
-    ISwapRouter.ExactInputSingleParams memory params =
-            ISwapRouter.ExactInputSingleParams({
-                tokenIn: address(usdcToken),
-                tokenOut: SWAP_TOKEN,
-                fee: _poolFee,
-                recipient: address(this),
-                deadline: block.timestamp,
-                amountIn: _amountIn,
-                amountOutMinimum: 0,
-                sqrtPriceLimitX96: 0
-            });
-
-    uint256 amountOut = swapRouter.exactInputSingle(params);
-    
-    token.mint(msg.sender, amountOut);
   }
 
-  function redeem(uint _amountIn, uint24 _poolFee) public {
-    TransferHelper.safeTransferFrom(address(token), msg.sender, address(this), _amountIn);
-    TransferHelper.safeApprove(address(token), address(swapRouter), _amountIn);
-    address pool = swapFactory.getPool(
-      address(usdcToken),
-      address(SWAP_TOKEN),
-      _poolFee
-    );
-    TransferHelper.safeApprove(address(SWAP_TOKEN), pool, _amountIn);
-    uint balanceSwapToken = IERC20(SWAP_TOKEN).balanceOf(address(this));
+  function setTokens(address[] memory _tokens) public onlyOwner {
+    tokens = _tokens;
+  }
 
-    ISwapRouter.ExactInputSingleParams memory params =
-            ISwapRouter.ExactInputSingleParams({
-                tokenIn: SWAP_TOKEN,
-                tokenOut: address(usdcToken),
-                fee: _poolFee,
-                recipient: msg.sender,
-                deadline: block.timestamp,
-                amountIn: _amountIn,
-                amountOutMinimum: 0,
-                sqrtPriceLimitX96: 0
-            });
+  function mint(uint _amountIn) public {
+    TransferHelper.safeTransferFrom(address(usdcToken), msg.sender, address(this), _amountIn);
+    uint mintTokens = MAX_INT;
+    for (uint i = 0; i < tokens.length; i++) {
+      TokenOptions memory token = tokensOptions[tokens[i]];
+      TransferHelper.safeApprove(address(usdcToken), token.router, _amountIn);
+      address pool = IUniswapV3Factory(swapFactory).getPool(
+        address(usdcToken),
+        token.token,
+        token.poolFee
+      );
+      TransferHelper.safeApprove(address(usdcToken), pool, _amountIn);
+      ISwapRouter.ExactInputSingleParams memory params =
+        ISwapRouter.ExactInputSingleParams({
+            tokenIn: address(usdcToken),
+            tokenOut: token.token,
+            fee: token.poolFee,
+            recipient: address(this),
+            deadline: block.timestamp,
+            amountIn: Math.mulDiv(_amountIn, token.share, baseFee),
+            amountOutMinimum: 0,
+            sqrtPriceLimitX96: 0
+        });
+      uint balanceSwapToken = IERC20(token.token).balanceOf(address(this));
+      uint amountOut = swapRouter.exactInputSingle(params);
+      uint balanceToken = ISofiToken(sofiToken).totalSupply();
 
-    uint256 amountOut = swapRouter.exactInputSingle(params);
-    
-    token.burn(msg.sender, _amountIn);
+      uint outputAmount = Math.mulDiv(balanceToken, amountOut, balanceSwapToken);
+
+      if (outputAmount < mintTokens) {
+        mintTokens = outputAmount;
+      }
+    }
+
+    sofiToken.mint(msg.sender, mintTokens);
+  }
+
+  function redeem(uint _amountIn) public {
+    TransferHelper.safeTransferFrom(address(sofiToken), msg.sender, address(this), _amountIn);
+    for (uint i = 0; i < tokens.length; i++) {
+      TokenOptions memory token = tokensOptions[tokens[i]];
+      TransferHelper.safeApprove(address(sofiToken), address(token.router), _amountIn);
+      address pool = swapFactory.getPool(
+        address(usdcToken),
+        address(token.token),
+        token.poolFee
+      );
+      TransferHelper.safeApprove(address(token.token), pool, _amountIn);
+      uint balanceSwapToken = IERC20(token.token).balanceOf(address(this));
+      uint balanceToken = ISofiToken(sofiToken).totalSupply();
+      ISwapRouter.ExactInputSingleParams memory params =
+        ISwapRouter.ExactInputSingleParams({
+          tokenIn: token.token,
+          tokenOut: address(usdcToken),
+          fee: token.poolFee,
+          recipient: msg.sender,
+          deadline: block.timestamp,
+          amountIn: Math.mulDiv(_amountIn, balanceSwapToken, balanceToken),
+          amountOutMinimum: 0,
+          sqrtPriceLimitX96: 0
+        });
+      
+      swapRouter.exactInputSingle(params);
+    }
+
+    sofiToken.burn(msg.sender, _amountIn);
   }
 
   function setToken(address _token) public onlyOwner {
-    token = ISofiToken(_token);
+    sofiToken = ISofiToken(_token);
   }
 
-  function estimateMint(uint _amount, uint24 _poolFee) view public returns(uint) {
-    address pool = swapFactory.getPool(
-      address(usdcToken),
-      address(SWAP_TOKEN),
-      _poolFee
-    );
-    (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
-    (, uint priceX96) = Math.tryMul(uint(sqrtPriceX96), uint(sqrtPriceX96));
-    (, uint unshiftedPrice) = Math.tryMul(priceX96, 1e18);
-    uint price = unshiftedPrice >> (96 * 2);
-    uint amountWithoutFee = Math.mulDiv(_amount, entryFee, baseFee);
-    uint outputSwaptoken = Math.mulDiv(amountWithoutFee, price, 1e18*2);
-    uint balanceSwapToken = IERC20(SWAP_TOKEN).balanceOf(address(this));
-    uint balanceToken = IERC20(token).balanceOf(address(this));
-    uint outputTokenAmount = Math.mulDiv(balanceToken, outputSwaptoken, balanceSwapToken);
-    return outputTokenAmount;
+  function estimateMint(uint _amount) view public returns(uint) {
+    uint mintTokens = MAX_INT;
+    for (uint i = 0; i < tokens.length; i++) {
+      TokenOptions memory token = tokensOptions[tokens[i]];
+      address pool = swapFactory.getPool(
+        address(usdcToken),
+        address(token.token),
+        token.poolFee
+      );
+      (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
+      (, uint priceX96) = Math.tryMul(uint(sqrtPriceX96), uint(sqrtPriceX96));
+      (, uint unshiftedPrice) = Math.tryMul(priceX96, 1e18);
+      uint price = unshiftedPrice >> (96 * 2);
+      uint amountWithoutFee = Math.mulDiv(_amount, entryFee, baseFee);
+      uint outputSwaptoken = Math.mulDiv(amountWithoutFee, price, 1e18*2);
+      uint balanceSwapToken = IERC20(token.token).balanceOf(address(this));
+      uint balanceToken = ISofiToken(sofiToken).totalSupply();
+      uint outputTokenAmount = Math.mulDiv(balanceToken, outputSwaptoken, balanceSwapToken);
+
+      if (outputTokenAmount < mintTokens) {
+        mintTokens = outputTokenAmount;
+      }    
+    }
+    return mintTokens;
   }
 
-  function estimateRedeem(uint _amount) pure public returns(uint) {
-    return _amount;
+  function estimateRedeem(uint _amount) view public returns(uint) {
+    uint outputAmountTotal = 0;
+    for (uint i = 0; i < tokens.length; i++) {
+      TokenOptions memory token = tokensOptions[tokens[i]];
+      address pool = swapFactory.getPool(
+        address(token.token),
+        address(usdcToken),
+        token.poolFee
+      );
+      (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
+      (, uint priceX96) = Math.tryMul(uint(sqrtPriceX96), uint(sqrtPriceX96));
+      (, uint unshiftedPrice) = Math.tryMul(priceX96, 1e18);
+      uint price = unshiftedPrice >> (96 * 2);
+      uint balanceToken = ISofiToken(sofiToken).totalSupply();
+      uint balanceSwapToken = IERC20(token.token).balanceOf(address(this));
+      uint outputAmountToken = Math.mulDiv(_amount, balanceSwapToken, balanceToken);
+      uint outputSwapToken = Math.mulDiv(outputAmountToken, price, 1e18*2);
+      outputAmountTotal += outputSwapToken;
+    }
+
+    return outputAmountTotal;
   }
 }
