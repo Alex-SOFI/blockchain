@@ -148,7 +148,8 @@ contract TokenManager is Ownable {
       (, uint priceX96) = Math.tryMul(uint(sqrtPriceX96), uint(sqrtPriceX96));
       (, uint unshiftedPrice) = Math.tryMul(priceX96, 1e18);
       uint price = unshiftedPrice >> (96 * 2);
-      uint amountWithoutFee = Math.mulDiv(_amount, entryFee, baseFee);
+      uint feeAmount = Math.mulDiv(_amount, entryFee, baseFee);
+      uint amountWithoutFee = Math.trySub(_amount, feeAmount);
       uint outputSwaptoken = Math.mulDiv(amountWithoutFee, price, 1e18*2);
       uint balanceSwapToken = IERC20(token.token).balanceOf(address(this));
       uint balanceToken = ISofiToken(sofiToken).totalSupply();
