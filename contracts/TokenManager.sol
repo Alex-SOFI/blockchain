@@ -63,7 +63,7 @@ contract TokenManager is Ownable {
     tokens = _tokens;
   }
 
-  function mint(uint _amountIn) public {
+  function mint(address _receiver, uint _amountIn) public {
     TransferHelper.safeTransferFrom(address(usdcToken), msg.sender, address(this), _amountIn);
     uint mintTokens = MAX_INT;
     for (uint i = 0; i < tokens.length; i++) {
@@ -97,7 +97,7 @@ contract TokenManager is Ownable {
       }
     }
 
-    sofiToken.mint(msg.sender, mintTokens);
+    sofiToken.mint(_receiver, mintTokens);
   }
 
   function redeem(uint _amountIn) public {
