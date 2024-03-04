@@ -65,15 +65,31 @@ contract TokenManager is Ownable {
 
   function mint(address _receiver, uint _amountIn) public {
     TransferHelper.safeTransferFrom(address(usdcToken), msg.sender, address(this), _amountIn);
-    uint mintTokens = MAX_INT;
+    uint feeAmount = Math.mulDiv(_amountIn, entryFee, baseFee);
+    (, uint amountInWithoutFee) = Math.trySub(_amountIn, feeAmount);
+    uint normalizedTotal = 0;
     for (uint i = 0; i < tokens.length; i++) {
       TokenOptions memory token = tokensOptions[tokens[i]];
-      TransferHelper.safeApprove(address(usdcToken), token.router, _amountIn);
       address pool = IUniswapV3Factory(swapFactory).getPool(
         address(usdcToken),
         token.token,
         token.poolFee
       );
+      uint priceToken = _getPrice(pool);
+      uint balanceToken = IERC20(token.token).balanceOf(address(this));
+      normalizedTotal += priceToken * balanceToken;
+    }
+    uint balanceSofiToken = ISofiToken(sofiToken).totalSupply();
+    uint outputSofiAmount = Math.mulDiv(amountInWithoutFee, balanceSofiToken, amountInWithoutFee + normalizedTotal);
+    
+    for (uint i = 0; i < tokens.length; i++) {
+      TokenOptions memory token = tokensOptions[tokens[i]];
+      address pool = IUniswapV3Factory(swapFactory).getPool(
+        address(usdcToken),
+        token.token,
+        token.poolFee
+      );
+      TransferHelper.safeApprove(address(usdcToken), token.router, _amountIn);
       TransferHelper.safeApprove(address(usdcToken), pool, _amountIn);
       ISwapRouter.ExactInputSingleParams memory params =
         ISwapRouter.ExactInputSingleParams({
@@ -82,52 +98,18 @@ contract TokenManager is Ownable {
             fee: token.poolFee,
             recipient: address(this),
             deadline: block.timestamp,
-            amountIn: Math.mulDiv(_amountIn, token.share, baseFee),
+            amountIn: Math.mulDiv(amountInWithoutFee, token.share, baseFee),
             amountOutMinimum: 0,
             sqrtPriceLimitX96: 0
         });
-      uint balanceSwapToken = IERC20(token.token).balanceOf(address(this));
-      uint amountOut = swapRouter.exactInputSingle(params);
-      uint balanceToken = ISofiToken(sofiToken).totalSupply();
-
-      uint outputAmount = Math.mulDiv(balanceToken, amountOut, balanceSwapToken);
-
-      if (outputAmount < mintTokens) {
-        mintTokens = outputAmount;
-      }
+      swapRouter.exactInputSingle(params);
     }
 
-    sofiToken.mint(_receiver, mintTokens);
+    sofiToken.mint(_receiver, outputSofiAmount);
   }
 
   function redeem(uint _amountIn) public {
     TransferHelper.safeTransferFrom(address(sofiToken), msg.sender, address(this), _amountIn);
-    for (uint i = 0; i < tokens.length; i++) {
-      TokenOptions memory token = tokensOptions[tokens[i]];
-      TransferHelper.safeApprove(address(sofiToken), address(token.router), _amountIn);
-      address pool = swapFactory.getPool(
-        address(usdcToken),
-        address(token.token),
-        token.poolFee
-      );
-      TransferHelper.safeApprove(address(token.token), pool, _amountIn);
-      uint balanceSwapToken = IERC20(token.token).balanceOf(address(this));
-      uint balanceToken = ISofiToken(sofiToken).totalSupply();
-      ISwapRouter.ExactInputSingleParams memory params =
-        ISwapRouter.ExactInputSingleParams({
-          tokenIn: token.token,
-          tokenOut: address(usdcToken),
-          fee: token.poolFee,
-          recipient: msg.sender,
-          deadline: block.timestamp,
-          amountIn: Math.mulDiv(_amountIn, balanceSwapToken, balanceToken),
-          amountOutMinimum: 0,
-          sqrtPriceLimitX96: 0
-        });
-      
-      swapRouter.exactInputSingle(params);
-    }
-
     sofiToken.burn(msg.sender, _amountIn);
   }
 
@@ -135,31 +117,24 @@ contract TokenManager is Ownable {
     sofiToken = ISofiToken(_token);
   }
 
-  function estimateMint(uint _amount) view public returns(uint) {
-    uint mintTokens = MAX_INT;
+  function estimateMint(uint _amountIn) view public returns(uint) {
+    uint feeAmount = Math.mulDiv(_amountIn, entryFee, baseFee);
+    (, uint amountInWithoutFee) = Math.trySub(_amountIn, feeAmount);
+    uint normalizedTotal = 0;
     for (uint i = 0; i < tokens.length; i++) {
       TokenOptions memory token = tokensOptions[tokens[i]];
-      address pool = swapFactory.getPool(
+      address pool = IUniswapV3Factory(swapFactory).getPool(
         address(usdcToken),
-        address(token.token),
+        token.token,
         token.poolFee
       );
-      (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
-      (, uint priceX96) = Math.tryMul(uint(sqrtPriceX96), uint(sqrtPriceX96));
-      (, uint unshiftedPrice) = Math.tryMul(priceX96, 1e18);
-      uint price = unshiftedPrice >> (96 * 2);
-      uint feeAmount = Math.mulDiv(_amount, entryFee, baseFee);
-      uint amountWithoutFee = Math.trySub(_amount, feeAmount);
-      uint outputSwaptoken = Math.mulDiv(amountWithoutFee, price, 1e18*2);
-      uint balanceSwapToken = IERC20(token.token).balanceOf(address(this));
-      uint balanceToken = ISofiToken(sofiToken).totalSupply();
-      uint outputTokenAmount = Math.mulDiv(balanceToken, outputSwaptoken, balanceSwapToken);
-
-      if (outputTokenAmount < mintTokens) {
-        mintTokens = outputTokenAmount;
-      }    
+      uint priceToken = _getPrice(pool);
+      uint balanceToken = IERC20(token.token).balanceOf(address(this));
+      normalizedTotal += priceToken * balanceToken;
     }
-    return mintTokens;
+    uint balanceSofiToken = ISofiToken(sofiToken).totalSupply();
+    uint outputSofiAmount = Math.mulDiv(amountInWithoutFee, balanceSofiToken, amountInWithoutFee + normalizedTotal);
+    return outputSofiAmount;
   }
 
   function estimateRedeem(uint _amount) view public returns(uint) {
@@ -183,5 +158,12 @@ contract TokenManager is Ownable {
     }
 
     return outputAmountTotal;
+  }
+
+  function _getPrice(address _pool) view public returns(uint) {
+    (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(_pool).slot0();
+    (, uint priceX96) = Math.tryMul(uint(sqrtPriceX96), uint(sqrtPriceX96));
+    (, uint unshiftedPrice) = Math.tryMul(priceX96, 1e18);
+    return unshiftedPrice >> (96 * 2);
   }
 }

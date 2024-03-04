@@ -1,7 +1,7 @@
 import { formatEther, parseEther } from "viem";
 import hre from "hardhat";
 
-const USDC_TOKEN = '0xb79399E8a168291ed7039f6DaEce274c0f68caA7'
+const USDC_TOKEN = '0x0c86A754A29714C4Fe9C6F1359fa7099eD174c0b'
 const ROUTER = '0xE592427A0AEce92De3Edee1F18E0157C05861564'
 const FACTORY = '0x1F98431c8aD98523631AE4a59f267346ea31F984'
 
