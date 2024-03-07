@@ -80,7 +80,12 @@ contract TokenManager is Ownable {
       normalizedTotal += priceToken * balanceToken;
     }
     uint balanceSofiToken = ISofiToken(sofiToken).totalSupply();
-    uint outputSofiAmount = Math.mulDiv(amountInWithoutFee, balanceSofiToken, amountInWithoutFee + normalizedTotal);
+    uint outputSofiAmount = 0;
+    if (balanceSofiToken == 0) {
+      outputSofiAmount = amountInWithoutFee;
+    } else {
+      outputSofiAmount = Math.mulDiv(amountInWithoutFee, balanceSofiToken, amountInWithoutFee + normalizedTotal);
+    }
     
     for (uint i = 0; i < tokens.length; i++) {
       TokenOptions memory token = tokensOptions[tokens[i]];
@@ -109,8 +114,7 @@ contract TokenManager is Ownable {
   }
 
   function redeem(uint _amountIn) public {
-    TransferHelper.safeTransferFrom(address(sofiToken), msg.sender, address(this), _amountIn);
-    sofiToken.burn(msg.sender, _amountIn);
+    sofiToken.burn(address(this), _amountIn);
   }
 
   function setToken(address _token) public onlyOwner {
@@ -133,29 +137,30 @@ contract TokenManager is Ownable {
       normalizedTotal += priceToken * balanceToken;
     }
     uint balanceSofiToken = ISofiToken(sofiToken).totalSupply();
-    uint outputSofiAmount = Math.mulDiv(amountInWithoutFee, balanceSofiToken, amountInWithoutFee + normalizedTotal);
+    uint outputSofiAmount = 0;
+    if (balanceSofiToken == 0) {
+      outputSofiAmount = amountInWithoutFee;
+    } else {
+      outputSofiAmount = Math.mulDiv(amountInWithoutFee, balanceSofiToken, amountInWithoutFee + normalizedTotal);
+    }
     return outputSofiAmount;
   }
 
   function estimateRedeem(uint _amount) view public returns(uint) {
-    uint outputAmountTotal = 0;
+    uint normalizedTotal = 0;
+    uint balanceSofiToken = ISofiToken(sofiToken).totalSupply();
     for (uint i = 0; i < tokens.length; i++) {
       TokenOptions memory token = tokensOptions[tokens[i]];
-      address pool = swapFactory.getPool(
-        address(token.token),
+      address pool = IUniswapV3Factory(swapFactory).getPool(
         address(usdcToken),
+        token.token,
         token.poolFee
       );
-      (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
-      (, uint priceX96) = Math.tryMul(uint(sqrtPriceX96), uint(sqrtPriceX96));
-      (, uint unshiftedPrice) = Math.tryMul(priceX96, 1e18);
-      uint price = unshiftedPrice >> (96 * 2);
-      uint balanceToken = ISofiToken(sofiToken).totalSupply();
-      uint balanceSwapToken = IERC20(token.token).balanceOf(address(this));
-      uint outputAmountToken = Math.mulDiv(_amount, balanceSwapToken, balanceToken);
-      uint outputSwapToken = Math.mulDiv(outputAmountToken, price, 1e18*2);
-      outputAmountTotal += outputSwapToken;
+      uint priceToken = _getPrice(pool);
+      uint balanceToken = IERC20(token.token).balanceOf(address(this));
+      normalizedTotal += priceToken * balanceToken;
     }
+    uint outputAmountTotal = Math.mulDiv(_amount, balanceSofiToken, normalizedTotal);
 
     return outputAmountTotal;
   }
