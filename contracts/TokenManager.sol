@@ -114,7 +114,33 @@ contract TokenManager is Ownable {
   }
 
   function redeem(uint _amountIn) public {
-    sofiToken.burn(address(this), _amountIn);
+    uint balanceSofiToken = ISofiToken(sofiToken).totalSupply();
+    for (uint i = 0; i < tokens.length; i++) {
+      TokenOptions memory token = tokensOptions[tokens[i]];
+      address pool = IUniswapV3Factory(swapFactory).getPool(
+        address(usdcToken),
+        token.token,
+        token.poolFee
+      );
+      uint balanceToken = IERC20(token.token).balanceOf(address(this));
+      uint amountTokenForSwap = Math.mulDiv(_amountIn, balanceToken, balanceSofiToken);
+      TransferHelper.safeApprove(token.token, token.router, amountTokenForSwap);
+      TransferHelper.safeApprove(token.token, pool, amountTokenForSwap);
+      ISwapRouter.ExactInputSingleParams memory params =
+        ISwapRouter.ExactInputSingleParams({
+            tokenIn: token.token,
+            tokenOut: address(usdcToken),
+            fee: token.poolFee,
+            recipient: msg.sender,
+            deadline: block.timestamp,
+            amountIn: amountTokenForSwap,
+            amountOutMinimum: 0,
+            sqrtPriceLimitX96: 0
+        });
+      swapRouter.exactInputSingle(params); 
+    }
+
+    ISofiToken(sofiToken).burn(msg.sender, _amountIn);
   }
 
   function setToken(address _token) public onlyOwner {
