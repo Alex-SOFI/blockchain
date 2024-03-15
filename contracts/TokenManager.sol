@@ -96,6 +96,10 @@ contract TokenManager is Ownable {
       );
       TransferHelper.safeApprove(address(usdcToken), token.router, _amountIn);
       TransferHelper.safeApprove(address(usdcToken), pool, _amountIn);
+      uint amountInToken = Math.mulDiv(amountInWithoutFee, token.share, baseFee);
+      if (i == tokens.length - 1) {
+        amountInToken = IERC20(usdcToken).balanceOf(address(this));
+      }
       ISwapRouter.ExactInputSingleParams memory params =
         ISwapRouter.ExactInputSingleParams({
             tokenIn: address(usdcToken),
@@ -103,7 +107,7 @@ contract TokenManager is Ownable {
             fee: token.poolFee,
             recipient: address(this),
             deadline: block.timestamp,
-            amountIn: Math.mulDiv(amountInWithoutFee, token.share, baseFee),
+            amountIn: amountInToken,
             amountOutMinimum: 0,
             sqrtPriceLimitX96: 0
         });
