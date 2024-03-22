@@ -75,9 +75,8 @@ contract TokenManager is Ownable {
         token.token,
         token.poolFee
       );
-      uint priceToken = _getPrice(pool);
       uint balanceToken = IERC20(token.token).balanceOf(address(this));
-      normalizedTotal += priceToken * balanceToken;
+      normalizedTotal += getAmountOut(pool, address(usdcToken), balanceToken);
     }
     uint balanceSofiToken = ISofiToken(sofiToken).totalSupply();
     uint outputSofiAmount = 0;
@@ -162,9 +161,8 @@ contract TokenManager is Ownable {
         token.token,
         token.poolFee
       );
-      uint priceToken = _getPrice(pool);
       uint balanceToken = IERC20(token.token).balanceOf(address(this));
-      normalizedTotal += priceToken * balanceToken;
+      normalizedTotal += getAmountOut(pool, address(usdcToken), balanceToken);
     }
     uint balanceSofiToken = ISofiToken(sofiToken).totalSupply();
     uint outputSofiAmount = 0;
@@ -186,19 +184,25 @@ contract TokenManager is Ownable {
         token.token,
         token.poolFee
       );
-      uint priceToken = _getPrice(pool);
       uint balanceToken = IERC20(token.token).balanceOf(address(this));
-      normalizedTotal += priceToken * balanceToken;
+      normalizedTotal += getAmountOut(pool, address(usdcToken), balanceToken);
     }
     uint outputAmountTotal = Math.mulDiv(_amount, balanceSofiToken, normalizedTotal);
 
     return outputAmountTotal;
   }
 
-  function _getPrice(address _pool) view public returns(uint) {
-    (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(_pool).slot0();
+  function getAmountOut(address pool, address tokenIn, uint amountIn) view public returns(uint amountOut) {
+    (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
     (, uint priceX96) = Math.tryMul(uint(sqrtPriceX96), uint(sqrtPriceX96));
     (, uint unshiftedPrice) = Math.tryMul(priceX96, 1e18);
-    return unshiftedPrice >> (96 * 2);
+    uint price = unshiftedPrice >> (96 * 2);
+    address token0 = IUniswapV3Pool(pool).token0();
+
+    if (token0 == tokenIn) {
+      (, amountOut) = Math.tryMul(amountIn, price); 
+    } else {
+      (, amountOut) = Math.tryDiv(amountIn, price); 
+    }
   }
 }

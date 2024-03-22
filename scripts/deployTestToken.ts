@@ -2,14 +2,17 @@ import { formatEther, parseEther } from "viem";
 import hre from "hardhat";
 
 async function main() {
-  const usdcToken = await hre.viem.deployContract("UsdcToken", [], {})
+  console.log("Start deploy")
+  const token = await hre.viem.deployContract("SampleToken", ["ETH", "ETH", 1000000000000000000000], {})
 
-  await hre.run("verify:verify", {
-    address: usdcToken.address,
-    constructorArguments: [],
-  });
+  console.log("Token Address", token.address)
 
-  console.log("UsdcToken Address", usdcToken.address)
+  await setTimeout(async () => {
+    await hre.run("verify:verify", {
+      address: token.address,
+      constructorArguments: ["ETH", "ETH", 1000000000000000000000],
+    });
+  }, 180000)
 }
 
 // We recommend this pattern to be able to use async/await everywhere
