@@ -43,14 +43,16 @@ contract StaticPool is ERC20 {
 
   address public _USDC;
   uint public _entryFee;
+  uint public _exitFee;
   uint public _baseFee;
   address public _feeManager;
 
-  constructor(address USDC, uint entryFee, uint baseFee, address feeManager) ERC20("SOFI", "Sofi Token") {
+  constructor(address USDC, uint entryFee, uint exitFee, uint baseFee, address feeManager) ERC20("SOFI", "Sofi Token") {
     _entryFee = entryFee;
     _baseFee = baseFee;
     _USDC = USDC;
     _feeManager = feeManager;
+    _exitFee = exitFee;
   }
 
   function bind(address token, uint weight, address factory, address router, uint24 poolFee) public {
@@ -93,6 +95,10 @@ contract StaticPool is ERC20 {
   }
 
   function redeem(uint tokenAmountIn) public {
+    uint amountFee = getAmountFee(tokenAmountIn, _exitFee);
+    (,uint amountWithoutFee) = Math.trySub(tokenAmountIn, amountFee);
+    transferFrom(msg.sender, _feeManager, amountFee);
+
     uint[] memory balancesTokens = new uint[](_tokens.length);
     for (uint i = 0; i < _tokens.length; i++) {
       address token = _tokens[i];
@@ -100,7 +106,7 @@ contract StaticPool is ERC20 {
       address pool = _swapRecords[token].pool;
       uint24 poolFee = _swapRecords[token].poolFee;
       uint balance = _records[token].balance;
-      uint amountTokenInForSwap = Math.mulDiv(tokenAmountIn, balance, totalSupply());
+      uint amountTokenInForSwap = Math.mulDiv(amountWithoutFee, balance, totalSupply());
 
       TransferHelper.safeApprove(token, router, amountTokenInForSwap);
       TransferHelper.safeApprove(token, pool, amountTokenInForSwap);
@@ -121,7 +127,7 @@ contract StaticPool is ERC20 {
       balancesTokens[i] = tokenBalanceBefore - tokenBalanceAfter;
     }
 
-    exitPool(tokenAmountIn, balancesTokens);
+    exitPool(amountWithoutFee, balancesTokens);
   }
 
   function joinPool(uint poolAmountOut, uint[] memory maxAmountsIn, address receiver) public {
@@ -135,9 +141,9 @@ contract StaticPool is ERC20 {
   }
 
   function mint(address receiver, uint tokenAmountIn) public {
-    uint amountFee = getAmountFee(tokenAmountIn);
+    uint amountFee = getAmountFee(tokenAmountIn, _entryFee);
     (,uint amountWithoutFee) = Math.trySub(tokenAmountIn, amountFee);
-    uint amountTokenOut = estimateMint(tokenAmountIn);
+    uint amountTokenOut = estimateMint(amountWithoutFee);
     uint[] memory balancesTokens = new uint[](_tokens.length);
 
     TransferHelper.safeTransferFrom(address(_USDC), msg.sender, address(this), tokenAmountIn);
@@ -177,7 +183,7 @@ contract StaticPool is ERC20 {
 
   function estimateMint(uint tokenAmountIn) view public returns(uint) {
     uint indexAmount = getIndexBalancePrice();
-    uint amountFee = getAmountFee(tokenAmountIn);
+    uint amountFee = getAmountFee(tokenAmountIn, _entryFee);
     (,uint amountWithoutFee) = Math.trySub(tokenAmountIn, amountFee);
 
     if (indexAmount != 0) {
@@ -189,7 +195,10 @@ contract StaticPool is ERC20 {
 
   function estimateRedeem(uint tokenAmountIn) view public returns(uint) {
     uint indexAmount = getIndexBalancePrice();
-    return Math.mulDiv(tokenAmountIn, indexAmount, totalSupply());
+    uint amountFee = getAmountFee(tokenAmountIn, _exitFee);
+    (,uint amountWithoutFee) = Math.trySub(tokenAmountIn, amountFee);
+
+    return Math.mulDiv(amountWithoutFee, indexAmount, totalSupply());
   }
 
   function getAmountOut(address pool, address tokenIn, uint amountIn) view public returns(uint amountOut) {
@@ -222,7 +231,7 @@ contract StaticPool is ERC20 {
     }
   }
 
-  function getAmountFee(uint amountIn) view public returns(uint) {
-    return Math.mulDiv(amountIn, _entryFee, _baseFee);
+  function getAmountFee(uint amountIn, uint fee) view public returns(uint) {
+    return Math.mulDiv(amountIn, fee, _baseFee);
   }
 }
