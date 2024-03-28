@@ -19,7 +19,7 @@ interface IToken {
   function totalSupply() view external returns(uint);
 }
 
-contract StaticPool is ERC20 {
+contract StaticPool is ERC20, Ownable {
   using Math for uint;
 
   struct Record {
@@ -35,7 +35,7 @@ contract StaticPool is ERC20 {
     address pool;
   }
 
-  address[] _tokens;
+  address[] public _tokens;
   mapping(address => Record) public _records;
   mapping(address => SwapRecord) public _swapRecords;
   
@@ -46,16 +46,20 @@ contract StaticPool is ERC20 {
   uint public _exitFee;
   uint public _baseFee;
   address public _feeManager;
+  uint public _lastFeeBlock;
+  uint public _feeTokenPerBlock;
 
-  constructor(address USDC, uint entryFee, uint exitFee, uint baseFee, address feeManager) ERC20("SOFI", "Sofi Token") {
+  constructor(address USDC, uint entryFee, uint exitFee, uint baseFee, address feeManager, uint feeTokenPerBlock) ERC20("SOFI", "Sofi Token") Ownable(msg.sender) {
     _entryFee = entryFee;
     _baseFee = baseFee;
     _USDC = USDC;
     _feeManager = feeManager;
     _exitFee = exitFee;
+    _lastFeeBlock = block.number;
+    _feeTokenPerBlock = feeTokenPerBlock;
   }
 
-  function bind(address token, uint weight, address factory, address router, uint24 poolFee) public {
+  function bind(address token, uint weight, address factory, address router, uint24 poolFee) public onlyOwner {
     address pool = IUniswapV3Factory(factory).getPool(
       address(_USDC),
       token,
@@ -181,6 +185,22 @@ contract StaticPool is ERC20 {
     joinPool(amountTokenOut, balancesTokens, receiver);
   }
 
+  function setFees(uint entryFee, uint exitFee, uint baseFee, address feeManager, uint feeTokenPerBlock) public onlyOwner {
+    _entryFee = entryFee;
+    _baseFee = baseFee;
+    _feeManager = feeManager;
+    _exitFee = exitFee;
+    _feeTokenPerBlock = feeTokenPerBlock;
+  }
+
+
+  function mintTvlFees() public onlyOwner {
+    uint feeAmount = calculateTvlFees();
+
+    mint(_feeManager, feeAmount);
+    _lastFeeBlock = block.number;
+  }
+
   function estimateMint(uint tokenAmountIn) view public returns(uint) {
     uint indexAmount = getIndexBalancePrice();
     uint amountFee = getAmountFee(tokenAmountIn, _entryFee);
@@ -233,5 +253,10 @@ contract StaticPool is ERC20 {
 
   function getAmountFee(uint amountIn, uint fee) view public returns(uint) {
     return Math.mulDiv(amountIn, fee, _baseFee);
+  }
+
+  function calculateTvlFees() public view returns (uint) {
+    uint diffBlocks = block.number - _lastFeeBlock;
+    return diffBlocks * _feeTokenPerBlock;
   }
 }
