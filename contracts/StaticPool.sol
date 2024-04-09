@@ -1,4 +1,3 @@
-// contracts/MyNFT.sol
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
 pragma abicoder v2;
@@ -12,6 +11,8 @@ import '@uniswap/v3-periphery/contracts/libraries/TransferHelper.sol';
 import '@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol';
 import '@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol';
 import '@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol';
+
+import { IWETH9 } from "./WETH9.sol";
 
 interface IToken {
   function mint(address _to, uint _amount) external;
@@ -42,6 +43,7 @@ contract StaticPool is ERC20, Ownable {
   uint public _totalWeight;
 
   address public _USDC;
+  address public _WETH;
   uint public _entryFee;
   uint public _exitFee;
   uint public _baseFee;
@@ -49,7 +51,7 @@ contract StaticPool is ERC20, Ownable {
   uint public _lastFeeBlock;
   uint public _feeTokenPerBlock;
 
-  constructor(address USDC, uint entryFee, uint exitFee, uint baseFee, address feeManager, uint feeTokenPerBlock) ERC20("SOFI", "Sofi Token") Ownable(msg.sender) {
+  constructor(address USDC, address WETH, uint entryFee, uint exitFee, uint baseFee, address feeManager, uint feeTokenPerBlock) ERC20("SOFI", "Sofi Token") Ownable(msg.sender) {
     _entryFee = entryFee;
     _baseFee = baseFee;
     _USDC = USDC;
@@ -57,6 +59,7 @@ contract StaticPool is ERC20, Ownable {
     _exitFee = exitFee;
     _lastFeeBlock = block.number;
     _feeTokenPerBlock = feeTokenPerBlock;
+    _WETH = WETH;
   }
 
   function bind(address token, uint weight, address factory, address router, uint24 poolFee) public onlyOwner {
@@ -144,13 +147,18 @@ contract StaticPool is ERC20, Ownable {
     _mint(receiver, poolAmountOut);
   }
 
-  function mint(address receiver, uint tokenAmountIn) public {
+  function mint(address receiver, uint tokenAmountIn) public payable {
     uint amountFee = getAmountFee(tokenAmountIn, _entryFee);
     (,uint amountWithoutFee) = Math.trySub(tokenAmountIn, amountFee);
     uint amountTokenOut = estimateMint(amountWithoutFee);
     uint[] memory balancesTokens = new uint[](_tokens.length);
 
-    TransferHelper.safeTransferFrom(address(_USDC), msg.sender, address(this), tokenAmountIn);
+    if (msg.value > 0) {
+      IWETH9(_WETH).deposit();
+    } else {
+      TransferHelper.safeTransferFrom(address(_USDC), msg.sender, address(this), tokenAmountIn);
+    }
+    
     TransferHelper.safeTransfer(address(_USDC), _feeManager, amountFee);
 
     for (uint i = 0; i < _tokens.length; i++) {
