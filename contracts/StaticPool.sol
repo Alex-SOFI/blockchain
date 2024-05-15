@@ -45,22 +45,24 @@ contract StaticPool is ERC20, Ownable, ReentrancyGuard {
 
   address public _USDC;
   address public _WETH;
+  uint public _tvlFee;
   uint public _entryFee;
   uint public _exitFee;
   uint public _baseFee;
   address public _feeManager;
   uint public _lastFeeBlock;
-  uint public _feeTokenPerBlock;
+  uint public _blocksPerYear;
   uint public accTVLFees = 0;
 
-  constructor(address USDC, address WETH, uint entryFee, uint exitFee, uint baseFee, address feeManager, uint feeTokenPerBlock) ERC20("SOPHIE", "SOPHIE") Ownable(msg.sender) {
+  constructor(address USDC, address WETH, uint entryFee, uint exitFee, uint baseFee, address feeManager, uint blocksPerYear, uint tvlFee) ERC20("SOPHIE", "SOPHIE") Ownable(msg.sender) {
     _entryFee = entryFee;
     _baseFee = baseFee;
     _USDC = USDC;
     _feeManager = feeManager;
     _exitFee = exitFee;
+    _tvlFee = tvlFee;
     _lastFeeBlock = block.number;
-    _feeTokenPerBlock = feeTokenPerBlock;
+    _blocksPerYear = blocksPerYear;
     _WETH = WETH;
   }
 
@@ -233,12 +235,13 @@ contract StaticPool is ERC20, Ownable, ReentrancyGuard {
     joinPool(amountTokenOut, balancesTokens, receiver);
   }
 
-  function setFees(uint entryFee, uint exitFee, uint baseFee, address feeManager, uint feeTokenPerBlock) public onlyOwner {
+  function setFees(uint entryFee, uint exitFee, uint baseFee, address feeManager, uint blocksPerYear, uint tvlFee) public onlyOwner {
     _entryFee = entryFee;
     _baseFee = baseFee;
     _feeManager = feeManager;
     _exitFee = exitFee;
-    _feeTokenPerBlock = feeTokenPerBlock;
+    _blocksPerYear = blocksPerYear;
+    _tvlFee = tvlFee;
 
     uint feeAmount = calculateTvlFees();
     accTVLFees = accTVLFees + feeAmount;
@@ -316,12 +319,30 @@ contract StaticPool is ERC20, Ownable, ReentrancyGuard {
 
   function calculateTvlFees() public view returns (uint) {
     uint diffBlocks = block.number - _lastFeeBlock;
-    return diffBlocks * _feeTokenPerBlock;
+    (, uint nominator) = Math.tryMul(totalSupply(), _tvlFee);
+    (, uint denominator) = Math.tryMul(_blocksPerYear, _baseFee);
+    (, uint tokensPerBlock) = Math.tryDiv(nominator, denominator);
+    return diffBlocks * tokensPerBlock;
   }
 
   receive() external payable {}
 
-  function emergencyWithdraw(address _token, uint amount) public onlyOwner {
-    TransferHelper.safeTransfer(_token, owner(), amount);
+  function emergencyWithdraw(uint tokenAmountIn) public nonReentrant() {
+    uint amountFee = getAmountFee(tokenAmountIn, _exitFee);
+    (,uint amountWithoutFee) = Math.trySub(tokenAmountIn, amountFee);
+    uint[] memory balancesTokens = new uint[](_tokens.length);
+    
+    for (uint i = 0; i < _tokens.length; i++) {
+      address token = _tokens[i];
+      uint balance = _records[token].balance;
+      uint amountTokenInForSwap = Math.mulDiv(amountWithoutFee, balance, totalSupply());
+
+      uint tokenBalanceBefore = IERC20(token).balanceOf(msg.sender);
+      TransferHelper.safeTransferFrom(token, address(this), msg.sender, amountTokenInForSwap);
+      uint tokenBalanceAfter = IERC20(token).balanceOf(msg.sender);
+      balancesTokens[i] = tokenBalanceBefore - tokenBalanceAfter;
+    }
+
+    exitPool(amountWithoutFee, balancesTokens);
   }
 }
