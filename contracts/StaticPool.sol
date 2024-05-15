@@ -326,23 +326,4 @@ contract StaticPool is ERC20, Ownable, ReentrancyGuard {
   }
 
   receive() external payable {}
-
-  function emergencyWithdraw(uint tokenAmountIn) public nonReentrant() {
-    uint amountFee = getAmountFee(tokenAmountIn, _exitFee);
-    (,uint amountWithoutFee) = Math.trySub(tokenAmountIn, amountFee);
-    uint[] memory balancesTokens = new uint[](_tokens.length);
-    
-    for (uint i = 0; i < _tokens.length; i++) {
-      address token = _tokens[i];
-      uint balance = _records[token].balance;
-      uint amountTokenInForSwap = Math.mulDiv(amountWithoutFee, balance, totalSupply());
-
-      uint tokenBalanceBefore = IERC20(token).balanceOf(msg.sender);
-      TransferHelper.safeTransferFrom(token, address(this), msg.sender, amountTokenInForSwap);
-      uint tokenBalanceAfter = IERC20(token).balanceOf(msg.sender);
-      balancesTokens[i] = tokenBalanceBefore - tokenBalanceAfter;
-    }
-
-    exitPool(amountWithoutFee, balancesTokens);
-  }
 }
