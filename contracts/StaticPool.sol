@@ -88,6 +88,16 @@ contract StaticPool is ERC20, Ownable, ReentrancyGuard {
     _totalWeight += weight;
   }
 
+  function changeWeight(address token, uint weight) public onlyOwner {
+    _records[token].weight = weight;
+  }
+
+  function changeToken(address token, address factory, address router, uint24 poolFee) public onlyOwner {
+    _swapRecords[token].factory = factory;
+    _swapRecords[token].router = router;
+    _swapRecords[token].poolFee = poolFee;
+  }
+
   function exitPool(uint poolAmountIn, uint[] memory minAmountOut) public {
     uint poolTotal = totalSupply();
 
@@ -162,10 +172,9 @@ contract StaticPool is ERC20, Ownable, ReentrancyGuard {
       address token = _tokens[i];
       uint balance = _records[token].balance;
       uint amountTokenInForSwap = Math.mulDiv(amountWithoutFee, balance, totalSupply());
-      uint tokenBalanceBefore = IERC20(token).balanceOf(msg.sender);
 
       TransferHelper.safeTransfer(token, address(msg.sender), amountTokenInForSwap);
-      balancesTokens[i] = tokenBalanceBefore - amountTokenInForSwap;
+      balancesTokens[i] = amountTokenInForSwap;
     }
 
     exitPool(amountWithoutFee, balancesTokens);
