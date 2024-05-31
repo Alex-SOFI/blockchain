@@ -2,16 +2,17 @@
 pragma solidity 0.8.20;
 pragma abicoder v2;
 
+import { ISwapRouter } from "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
+import { IUniswapV3Factory } from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol";
+import { IUniswapV3Pool } from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
+import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+
+import { Ownable2Step, Ownable } from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-
-import '@uniswap/v3-periphery/contracts/libraries/TransferHelper.sol';
-import '@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol';
-import '@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol';
-import '@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol';
 
 import { IWETH9 } from "./WETH9.sol";
 
@@ -21,8 +22,9 @@ interface IToken {
   function totalSupply() view external returns(uint);
 }
 
-contract StaticPool is ERC20, Ownable, ReentrancyGuard {
+contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
   using Math for uint;
+  using SafeERC20 for IERC20;
 
   struct Record {
     uint weight;
@@ -54,7 +56,37 @@ contract StaticPool is ERC20, Ownable, ReentrancyGuard {
   uint public _blocksPerYear;
   uint public accTVLFees = 0;
 
-  constructor(address USDC, address WETH, uint entryFee, uint exitFee, uint baseFee, address feeManager, uint blocksPerYear, uint tvlFee) ERC20("SOPHIE", "SOPHIE") Ownable(msg.sender) {
+  event SetFees(uint entryFee, uint exitFee, uint baseFee, address feeManager);
+
+  modifier checkParams(address feeManager, uint entryFee, uint exitFee, uint baseFee) {
+    require(feeManager != address(0), "StaticPool: Fee Manager should have address");
+    require(entryFee < baseFee, "StaticPool: Entry Fee should be less that Base Fee");
+    require(exitFee < baseFee, "StaticPool: Exit Fee should be less that Base Fee");
+    (, uint sumFees) = Math.tryAdd(entryFee, exitFee);
+    (, uint feesShare) = Math.tryMul(sumFees, 20); // 5%
+
+    require(feesShare < baseFee, "StaticPool: CAP of fees should be less that 5%");
+
+    _;
+  }
+
+  constructor(
+    address USDC,
+    address WETH,
+    uint entryFee,
+    uint exitFee,
+    uint baseFee,
+    address feeManager,
+    uint blocksPerYear,
+    uint tvlFee
+  )
+    ERC20("SOPHIE", "SOPHIE")
+    Ownable(msg.sender)
+    checkParams(feeManager, entryFee, exitFee, baseFee)
+  {
+    require(USDC != address(0), "StaticPool: USDC should have address");
+    require(WETH != address(0), "StaticPool: WETH should have address");
+
     _entryFee = entryFee;
     _baseFee = baseFee;
     _USDC = USDC;
@@ -64,6 +96,8 @@ contract StaticPool is ERC20, Ownable, ReentrancyGuard {
     _lastFeeBlock = block.number;
     _blocksPerYear = blocksPerYear;
     _WETH = WETH;
+
+    emit SetFees(entryFee, exitFee, baseFee, feeManager);
   }
 
   function bind(address token, uint weight, address factory, address router, uint24 poolFee) public onlyOwner {
@@ -85,7 +119,7 @@ contract StaticPool is ERC20, Ownable, ReentrancyGuard {
       pool: pool
     });
     _tokens.push(token);
-    _totalWeight += weight;
+    (, _totalWeight) = Math.tryAdd(_totalWeight, weight);
   }
 
   function changeWeight(address token, uint weight) public onlyOwner {
@@ -126,7 +160,7 @@ contract StaticPool is ERC20, Ownable, ReentrancyGuard {
 
     uint[] memory balancesTokens = new uint[](_tokens.length);
     
-    for (uint i = 0; i < _tokens.length; i++) {
+    for (uint i = 0; i < _tokens.length; ++i) {
       address token = _tokens[i];
       address router = _swapRecords[token].router;
       address pool = _swapRecords[token].pool;
@@ -135,8 +169,8 @@ contract StaticPool is ERC20, Ownable, ReentrancyGuard {
       uint amountTokenInForSwap = Math.mulDiv(amountWithoutFee, balance, totalSupply());
 
       if (amountTokenInForSwap > 0) {
-        TransferHelper.safeApprove(token, router, amountTokenInForSwap);
-        TransferHelper.safeApprove(token, pool, amountTokenInForSwap);
+        IERC20(token).safeIncreaseAllowance(router, amountTokenInForSwap);
+        IERC20(token).safeIncreaseAllowance(pool, amountTokenInForSwap);
         ISwapRouter.ExactInputSingleParams memory params =
           ISwapRouter.ExactInputSingleParams({
               tokenIn: token,
@@ -161,7 +195,7 @@ contract StaticPool is ERC20, Ownable, ReentrancyGuard {
     (,uint diffBalances) = Math.trySub(balanceAfter, balanceBefore);
     IWETH9(_WETH).withdraw(diffBalances);
 
-    (bool sent,) = address(msg.sender).call{value: diffBalances}("");
+    (bool sent,) = address(msg.sender).call{value: diffBalances, gas: 100000}("");
     require(sent, "StaticPool: Failed to send");
 
     exitPool(amountWithoutFee, balancesTokens);
@@ -177,7 +211,7 @@ contract StaticPool is ERC20, Ownable, ReentrancyGuard {
       uint balance = _records[token].balance;
       uint amountTokenInForSwap = Math.mulDiv(amountWithoutFee, balance, totalSupply());
 
-      TransferHelper.safeTransfer(token, address(msg.sender), amountTokenInForSwap);
+      IERC20(token).safeTransfer(address(msg.sender), amountTokenInForSwap);
       balancesTokens[i] = amountTokenInForSwap;
     }
 
@@ -211,10 +245,10 @@ contract StaticPool is ERC20, Ownable, ReentrancyGuard {
     if (msg.value > 0) {
       IWETH9(_WETH).deposit{value: msg.value}();
     } else {
-      TransferHelper.safeTransferFrom(address(_USDC), msg.sender, address(this), tokenAmountIn);
+      IERC20(_USDC).safeTransferFrom(msg.sender, address(this), tokenAmountIn);
     }
-    
-    TransferHelper.safeTransfer(address(_USDC), _feeManager, amountFee);
+
+    IERC20(_USDC).safeTransfer(_feeManager, amountFee);
 
     for (uint i = 0; i < _tokens.length; i++) {
       address token = _tokens[i];
@@ -228,8 +262,8 @@ contract StaticPool is ERC20, Ownable, ReentrancyGuard {
 
         uint amountTokenInForSwap = Math.mulDiv(amountWithoutFee, weight, _totalWeight);
 
-        TransferHelper.safeApprove(_USDC, router, amountTokenInForSwap);
-        TransferHelper.safeApprove(_USDC, pool, amountTokenInForSwap);
+        IERC20(_USDC).safeIncreaseAllowance(router, amountTokenInForSwap);
+        IERC20(_USDC).safeIncreaseAllowance(pool, amountTokenInForSwap);
         ISwapRouter.ExactInputSingleParams memory params =
           ISwapRouter.ExactInputSingleParams({
               tokenIn: _USDC,
@@ -253,7 +287,7 @@ contract StaticPool is ERC20, Ownable, ReentrancyGuard {
       joinPool(amountTokenOut, balancesTokens, receiver);
   }
 
-  function setFees(uint entryFee, uint exitFee, uint baseFee, address feeManager, uint blocksPerYear, uint tvlFee) public onlyOwner {
+  function setFees(uint entryFee, uint exitFee, uint baseFee, address feeManager, uint blocksPerYear, uint tvlFee) public onlyOwner checkParams(feeManager, entryFee, exitFee, baseFee) {
     _entryFee = entryFee;
     _baseFee = baseFee;
     _feeManager = feeManager;
@@ -264,6 +298,8 @@ contract StaticPool is ERC20, Ownable, ReentrancyGuard {
     uint feeAmount = calculateTvlFees();
     accTVLFees = accTVLFees + feeAmount;
     _lastFeeBlock = block.number;
+
+    emit SetFees(entryFee, exitFee, baseFee, feeManager);
   }
 
 
@@ -291,13 +327,13 @@ contract StaticPool is ERC20, Ownable, ReentrancyGuard {
   function estimateRedeem(uint tokenAmountIn) view public returns(uint) {
     uint indexAmount = getIndexBalancePrice();
     uint amountFee = getAmountFee(tokenAmountIn, _exitFee);
-    uint totalSupply = totalSupply();
+    uint _totalSupply = totalSupply();
 
-    require(totalSupply != 0, "StaticPool: totalSupply equals zero");
+    require(_totalSupply != 0, "StaticPool: totalSupply equals zero");
 
     (,uint amountWithoutFee) = Math.trySub(tokenAmountIn, amountFee);
 
-    return Math.mulDiv(amountWithoutFee, indexAmount, totalSupply);
+    return Math.mulDiv(amountWithoutFee, indexAmount, _totalSupply);
   }
 
   function getAmountOut(address pool, address tokenIn, uint amountIn) view public returns(uint amountOut) {
