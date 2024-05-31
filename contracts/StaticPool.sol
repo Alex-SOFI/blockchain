@@ -134,23 +134,27 @@ contract StaticPool is ERC20, Ownable, ReentrancyGuard {
       uint balance = _records[token].balance;
       uint amountTokenInForSwap = Math.mulDiv(amountWithoutFee, balance, totalSupply());
 
-      TransferHelper.safeApprove(token, router, amountTokenInForSwap);
-      TransferHelper.safeApprove(token, pool, amountTokenInForSwap);
-      ISwapRouter.ExactInputSingleParams memory params =
-        ISwapRouter.ExactInputSingleParams({
-            tokenIn: token,
-            tokenOut: _USDC,
-            fee: poolFee,
-            recipient: address(this),
-            deadline: block.timestamp,
-            amountIn: amountTokenInForSwap,
-            amountOutMinimum: 0,
-            sqrtPriceLimitX96: 0
-        });
-      uint tokenBalanceBefore = IERC20(token).balanceOf(msg.sender);
-      ISwapRouter(router).exactInputSingle(params);
-      uint tokenBalanceAfter = IERC20(token).balanceOf(msg.sender);
-      balancesTokens[i] = tokenBalanceBefore - tokenBalanceAfter;
+      if (amountTokenInForSwap > 0) {
+        TransferHelper.safeApprove(token, router, amountTokenInForSwap);
+        TransferHelper.safeApprove(token, pool, amountTokenInForSwap);
+        ISwapRouter.ExactInputSingleParams memory params =
+          ISwapRouter.ExactInputSingleParams({
+              tokenIn: token,
+              tokenOut: _USDC,
+              fee: poolFee,
+              recipient: address(this),
+              deadline: block.timestamp,
+              amountIn: amountTokenInForSwap,
+              amountOutMinimum: 0,
+              sqrtPriceLimitX96: 0
+          });
+        uint tokenBalanceBefore = IERC20(token).balanceOf(msg.sender);
+        ISwapRouter(router).exactInputSingle(params);
+        uint tokenBalanceAfter = IERC20(token).balanceOf(msg.sender);
+        balancesTokens[i] = tokenBalanceBefore - tokenBalanceAfter;
+      } else {
+        balancesTokens[i] = 0;
+      }
     }
 
     uint balanceAfter = IERC20(_USDC).balanceOf(address(this));
@@ -218,30 +222,35 @@ contract StaticPool is ERC20, Ownable, ReentrancyGuard {
       address pool = _swapRecords[token].pool;
       uint24 poolFee = _swapRecords[token].poolFee;
       uint weight = _records[token].weight;
-      uint tokenBalanceBefore = IERC20(token).balanceOf(address(this));
 
-      uint amountTokenInForSwap = Math.mulDiv(amountWithoutFee, weight, _totalWeight);
+      if (weight != 0) {
+        uint tokenBalanceBefore = IERC20(token).balanceOf(address(this));
 
-      TransferHelper.safeApprove(_USDC, router, amountTokenInForSwap);
-      TransferHelper.safeApprove(_USDC, pool, amountTokenInForSwap);
-      ISwapRouter.ExactInputSingleParams memory params =
-        ISwapRouter.ExactInputSingleParams({
-            tokenIn: _USDC,
-            tokenOut: token,
-            fee: poolFee,
-            recipient: address(this),
-            deadline: block.timestamp,
-            amountIn: amountTokenInForSwap,
-            amountOutMinimum: 0,
-            sqrtPriceLimitX96: 0
-        });
-      ISwapRouter(router).exactInputSingle(params);
+        uint amountTokenInForSwap = Math.mulDiv(amountWithoutFee, weight, _totalWeight);
 
-      uint tokenBalanceAfter = IERC20(token).balanceOf(address(this));
-      balancesTokens[i] = tokenBalanceAfter - tokenBalanceBefore;
+        TransferHelper.safeApprove(_USDC, router, amountTokenInForSwap);
+        TransferHelper.safeApprove(_USDC, pool, amountTokenInForSwap);
+        ISwapRouter.ExactInputSingleParams memory params =
+          ISwapRouter.ExactInputSingleParams({
+              tokenIn: _USDC,
+              tokenOut: token,
+              fee: poolFee,
+              recipient: address(this),
+              deadline: block.timestamp,
+              amountIn: amountTokenInForSwap,
+              amountOutMinimum: 0,
+              sqrtPriceLimitX96: 0
+          });
+        ISwapRouter(router).exactInputSingle(params);
+
+        uint tokenBalanceAfter = IERC20(token).balanceOf(address(this));
+        balancesTokens[i] = tokenBalanceAfter - tokenBalanceBefore;
+      } else {
+        balancesTokens[i] = 0;
+      }
     }
 
-    joinPool(amountTokenOut, balancesTokens, receiver);
+      joinPool(amountTokenOut, balancesTokens, receiver);
   }
 
   function setFees(uint entryFee, uint exitFee, uint baseFee, address feeManager, uint blocksPerYear, uint tvlFee) public onlyOwner {
