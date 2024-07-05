@@ -8,6 +8,7 @@ import { IUniswapV3Pool } from "@uniswap/v3-core/contracts/interfaces/IUniswapV3
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 import { Ownable2Step, Ownable } from "@openzeppelin/contracts/access/Ownable2Step.sol";
@@ -15,6 +16,8 @@ import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 import { IWETH9 } from "./WETH9.sol";
+import { ArbSys } from "./ArbSys.sol";
+
 
 interface IToken {
   function mint(address _to, uint _amount) external;
@@ -45,7 +48,7 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
   
   uint public _totalWeight;
 
-  address public _USDC;
+  address public _ENTRY;
   address public _WETH;
   uint public _tvlFee;
   uint public _entryFee;
@@ -55,6 +58,7 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
   uint public _lastFeeBlock;
   uint public _blocksPerYear;
   uint public accTVLFees = 0;
+  ArbSys constant public _arbSys = ArbSys(0x0000000000000000000000000000000000000064);
 
   event SetFees(uint entryFee, uint exitFee, uint baseFee, address feeManager);
 
@@ -65,13 +69,21 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
     (, uint sumFees) = Math.tryAdd(entryFee, exitFee);
     (, uint feesShare) = Math.tryMul(sumFees, 20); // 5%
 
-    require(feesShare < baseFee, "StaticPool: CAP of fees should be less that 5%");
+    require(feesShare <= baseFee, "StaticPool: CAP of fees should be less that 5%");
 
     _;
   }
 
+  modifier checkPoolParams(address token, address factory, address router) {
+    require(token != address(0x0), "StaticPool: token address can't be equal zero address");
+    require(factory != address(0x0), "StaticPool: factory address can't be equal zero address");
+    require(router != address(0x0), "StaticPool: router address can't be equal zero address");
+    
+    _;
+  }
+
   constructor(
-    address USDC,
+    address ENTRY,
     address WETH,
     uint entryFee,
     uint exitFee,
@@ -84,25 +96,30 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
     Ownable(msg.sender)
     checkParams(feeManager, entryFee, exitFee, baseFee)
   {
-    require(USDC != address(0), "StaticPool: USDC should have address");
+    require(ENTRY != address(0), "StaticPool: ENTRY should have address");
     require(WETH != address(0), "StaticPool: WETH should have address");
+    require(tvlFee < baseFee, "StaticPool: tvlFee should be less that baseFee");
 
     _entryFee = entryFee;
     _baseFee = baseFee;
-    _USDC = USDC;
+    _ENTRY = ENTRY;
     _feeManager = feeManager;
     _exitFee = exitFee;
     _tvlFee = tvlFee;
-    _lastFeeBlock = block.number;
+    _lastFeeBlock = _arbSys.arbBlockNumber();
     _blocksPerYear = blocksPerYear;
     _WETH = WETH;
 
     emit SetFees(entryFee, exitFee, baseFee, feeManager);
   }
 
-  function bind(address token, uint weight, address factory, address router, uint24 poolFee) public onlyOwner {
+  function bind(address token, uint weight, address factory, address router, uint24 poolFee)
+    public
+    onlyOwner
+    checkPoolParams(token, factory, router)
+  {
     address pool = IUniswapV3Factory(factory).getPool(
-      address(_USDC),
+      address(_ENTRY),
       token,
       poolFee
     );
@@ -123,16 +140,24 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
   }
 
   function changeWeight(address token, uint weight) public onlyOwner {
+    uint oldWeight = _records[token].weight;
     _records[token].weight = weight;
+
+    (, uint tmpWeight) = Math.tryAdd(_totalWeight, weight);
+    (, _totalWeight) = Math.trySub(tmpWeight, oldWeight);
   }
 
-  function changeToken(address token, address factory, address router, uint24 poolFee) public onlyOwner {
+  function changeToken(address token, address factory, address router, uint24 poolFee)
+    public
+    onlyOwner
+    checkPoolParams(token, factory, router)
+  {
     _swapRecords[token].factory = factory;
     _swapRecords[token].router = router;
     _swapRecords[token].poolFee = poolFee;
   }
 
-  function exitPool(uint poolAmountIn, uint[] memory minAmountOut) public {
+  function exitPool(uint poolAmountIn, uint[] memory minAmountOut) private {
     uint poolTotal = totalSupply();
 
     for (uint i = 0; i < _tokens.length; i++) {
@@ -148,7 +173,7 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
 
     uint feeAmount = calculateTvlFees();
     accTVLFees = accTVLFees + feeAmount;
-    _lastFeeBlock = block.number;
+    _lastFeeBlock = _arbSys.arbBlockNumber();
 
     _burn(msg.sender, poolAmountIn);
   }
@@ -156,7 +181,7 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
   function redeem(uint tokenAmountIn) public nonReentrant {
     uint amountFee = getAmountFee(tokenAmountIn, _exitFee);
     (,uint amountWithoutFee) = Math.trySub(tokenAmountIn, amountFee);
-    uint balanceBefore = IERC20(_USDC).balanceOf(address(this));
+    uint balanceBefore = IERC20(_ENTRY).balanceOf(address(this));
 
     uint[] memory balancesTokens = new uint[](_tokens.length);
     
@@ -174,7 +199,7 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
         ISwapRouter.ExactInputSingleParams memory params =
           ISwapRouter.ExactInputSingleParams({
               tokenIn: token,
-              tokenOut: _USDC,
+              tokenOut: _ENTRY,
               fee: poolFee,
               recipient: address(this),
               deadline: block.timestamp,
@@ -191,7 +216,7 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
       }
     }
 
-    uint balanceAfter = IERC20(_USDC).balanceOf(address(this));
+    uint balanceAfter = IERC20(_ENTRY).balanceOf(address(this));
     (,uint diffBalances) = Math.trySub(balanceAfter, balanceBefore);
     IWETH9(_WETH).withdraw(diffBalances);
 
@@ -209,16 +234,19 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
     for (uint i = 0; i < _tokens.length; i++) {
       address token = _tokens[i];
       uint balance = _records[token].balance;
-      uint amountTokenInForSwap = Math.mulDiv(amountWithoutFee, balance, totalSupply());
-
-      IERC20(token).safeTransfer(address(msg.sender), amountTokenInForSwap);
-      balancesTokens[i] = amountTokenInForSwap;
+      if (balance > 0) {
+        uint amountTokenInForSwap = Math.mulDiv(amountWithoutFee, balance, totalSupply());
+        IERC20(token).safeTransfer(address(msg.sender), amountTokenInForSwap);
+        balancesTokens[i] = amountTokenInForSwap;
+      } else {
+        balancesTokens[i] = 0;
+      }
     }
 
     exitPool(amountWithoutFee, balancesTokens);
   }
 
-  function joinPool(uint poolAmountOut, uint[] memory maxAmountsIn, address receiver) public {
+  function joinPool(uint poolAmountOut, uint[] memory maxAmountsIn, address receiver) private {
     for (uint i = 0; i < _tokens.length; i++) {
       address token = _tokens[i];
       (,uint updatedBalance) = Math.tryAdd(_records[token].balance, maxAmountsIn[i]);
@@ -227,28 +255,26 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
     
     uint feeAmount = calculateTvlFees();
     accTVLFees = accTVLFees + feeAmount;
-    _lastFeeBlock = block.number;
+    _lastFeeBlock = _arbSys.arbBlockNumber();
 
     _mint(receiver, poolAmountOut);
   }
 
-  function mint(address receiver, uint tokenAmountIn) public payable {
-    if (msg.value > 0) {
-      tokenAmountIn = msg.value;
-    }
+  function mint(address receiver) public payable nonReentrant {
+    uint tokenAmountIn = msg.value;
 
     uint amountFee = getAmountFee(tokenAmountIn, _entryFee);
     (,uint amountWithoutFee) = Math.trySub(tokenAmountIn, amountFee);
-    uint amountTokenOut = estimateMint(tokenAmountIn);
+    uint amountTokenOut = previewMint(tokenAmountIn);
     uint[] memory balancesTokens = new uint[](_tokens.length);
 
     if (msg.value > 0) {
       IWETH9(_WETH).deposit{value: msg.value}();
     } else {
-      IERC20(_USDC).safeTransferFrom(msg.sender, address(this), tokenAmountIn);
+      IERC20(_ENTRY).safeTransferFrom(msg.sender, address(this), tokenAmountIn);
     }
 
-    IERC20(_USDC).safeTransfer(_feeManager, amountFee);
+    IERC20(_ENTRY).safeTransfer(_feeManager, amountFee);
 
     for (uint i = 0; i < _tokens.length; i++) {
       address token = _tokens[i];
@@ -262,11 +288,11 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
 
         uint amountTokenInForSwap = Math.mulDiv(amountWithoutFee, weight, _totalWeight);
 
-        IERC20(_USDC).safeIncreaseAllowance(router, amountTokenInForSwap);
-        IERC20(_USDC).safeIncreaseAllowance(pool, amountTokenInForSwap);
+        IERC20(_ENTRY).safeIncreaseAllowance(router, amountTokenInForSwap);
+        IERC20(_ENTRY).safeIncreaseAllowance(pool, amountTokenInForSwap);
         ISwapRouter.ExactInputSingleParams memory params =
           ISwapRouter.ExactInputSingleParams({
-              tokenIn: _USDC,
+              tokenIn: _ENTRY,
               tokenOut: token,
               fee: poolFee,
               recipient: address(this),
@@ -297,7 +323,7 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
 
     uint feeAmount = calculateTvlFees();
     accTVLFees = accTVLFees + feeAmount;
-    _lastFeeBlock = block.number;
+    _lastFeeBlock = _arbSys.arbBlockNumber();
 
     emit SetFees(entryFee, exitFee, baseFee, feeManager);
   }
@@ -308,11 +334,11 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
 
     (, uint total) = Math.tryAdd(feeAmount, accTVLFees);
     _mint(_feeManager, total);
-    _lastFeeBlock = block.number;
+    _lastFeeBlock = _arbSys.arbBlockNumber();
     accTVLFees = 0;
   }
 
-  function estimateMint(uint tokenAmountIn) view public returns(uint) {
+  function previewMint(uint tokenAmountIn) view public returns(uint) {
     uint indexAmount = getIndexBalancePrice();
     uint amountFee = getAmountFee(tokenAmountIn, _entryFee);
     (,uint amountWithoutFee) = Math.trySub(tokenAmountIn, amountFee);
@@ -324,7 +350,7 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
     }
   }
 
-  function estimateRedeem(uint tokenAmountIn) view public returns(uint) {
+  function previewRedeem(uint tokenAmountIn) view public returns(uint) {
     uint indexAmount = getIndexBalancePrice();
     uint amountFee = getAmountFee(tokenAmountIn, _exitFee);
     uint _totalSupply = totalSupply();
@@ -339,13 +365,13 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
   function getAmountOut(address pool, address tokenIn, uint amountIn) view public returns(uint amountOut) {
     (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
     (, uint priceX96) = Math.tryMul(uint(sqrtPriceX96), uint(sqrtPriceX96));
-    uint unshiftedPrice = priceX96 >> 96;
-    (, unshiftedPrice) = Math.tryMul(unshiftedPrice, 1e18);
-    uint price = unshiftedPrice >> 96;
     address token0 = IUniswapV3Pool(pool).token0();
+    uint8 token0Decimals = IERC20Metadata(token0).decimals();
+    uint decimalsNumerator = 10**token0Decimals;
+    uint price = Math.mulDiv(priceX96, decimalsNumerator, 1 << 192);
 
     if (token0 == tokenIn) {
-      (, amountOut) = Math.tryMul(amountIn, price); 
+      amountOut = Math.mulDiv(amountIn, price, decimalsNumerator); 
     } else {
       amountOut = Math.mulDiv(amountIn, 10**18, price); 
     }
@@ -354,16 +380,19 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
   function getIndexBalancePrice() view public returns(uint amountOut) {
     for (uint i = 0; i < _tokens.length; i++) {
       address token = _tokens[i];
-      address factory = _swapRecords[token].factory;
-      uint24 poolFee = _swapRecords[token].poolFee;
-      
-      address pool = IUniswapV3Factory(factory).getPool(
-        address(_USDC),
-        token,
-        poolFee
-      );
       uint balanceToken = IERC20(token).balanceOf(address(this));
-      amountOut += getAmountOut(pool, token, balanceToken);
+
+      if (balanceToken > 0) {
+        address factory = _swapRecords[token].factory;
+        uint24 poolFee = _swapRecords[token].poolFee;
+        
+        address pool = IUniswapV3Factory(factory).getPool(
+          address(_ENTRY),
+          token,
+          poolFee
+        );
+        amountOut += getAmountOut(pool, token, balanceToken);
+      }
     }
   }
 
@@ -372,7 +401,7 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
   }
 
   function calculateTvlFees() public view returns (uint) {
-    uint diffBlocks = block.number - _lastFeeBlock;
+    uint diffBlocks = _arbSys.arbBlockNumber() - _lastFeeBlock;
     (, uint nominator) = Math.tryMul(totalSupply(), _tvlFee);
     (, uint denominator) = Math.tryMul(_blocksPerYear, _baseFee);
     (, uint tokensPerBlock) = Math.tryDiv(nominator, denominator);
