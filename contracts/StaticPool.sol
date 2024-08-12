@@ -17,6 +17,7 @@ import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.s
 
 import { IWETH9 } from "./WETH9.sol";
 import { ArbSys } from "./ArbSys.sol";
+import { ISwapOdosRouter } from "./ISwapOdosRouter.sol";
 
 
 interface IToken {
@@ -40,6 +41,9 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
     address router;
     uint24 poolFee;
     address pool;
+    bool isOdos;
+    address executor;
+    bytes pathDefinition;
   }
 
   address[] public _tokens;
@@ -92,7 +96,7 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
     uint blocksPerYear,
     uint tvlFee
   )
-    ERC20("SOPHIE", "SOPHIE")
+    ERC20("TEST", "TEST")
     Ownable(msg.sender)
     checkParams(feeManager, entryFee, exitFee, baseFee)
   {
@@ -113,7 +117,7 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
     emit SetFees(entryFee, exitFee, baseFee, feeManager);
   }
 
-  function bind(address token, uint weight, address factory, address router, uint24 poolFee)
+  function bind(address token, uint weight, address factory, address router, uint24 poolFee, bool isOdos, address executor, bytes memory pathDefinition)
     public
     onlyOwner
     checkPoolParams(token, factory, router)
@@ -133,7 +137,10 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
       factory: factory,
       router: router,
       poolFee: poolFee,
-      pool: pool
+      pool: pool,
+      isOdos: isOdos,
+      executor: executor,
+      pathDefinition: pathDefinition
     });
     _tokens.push(token);
     (, _totalWeight) = Math.tryAdd(_totalWeight, weight);
@@ -281,6 +288,7 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
       address router = _swapRecords[token].router;
       address pool = _swapRecords[token].pool;
       uint24 poolFee = _swapRecords[token].poolFee;
+      bool isOdos = _swapRecords[token].isOdos;
       uint weight = _records[token].weight;
 
       if (weight != 0) {
@@ -289,20 +297,35 @@ contract StaticPool is ERC20, Ownable2Step, ReentrancyGuard {
         uint amountTokenInForSwap = Math.mulDiv(amountWithoutFee, weight, _totalWeight);
 
         IERC20(_ENTRY).safeIncreaseAllowance(router, amountTokenInForSwap);
-        IERC20(_ENTRY).safeIncreaseAllowance(pool, amountTokenInForSwap);
-        ISwapRouter.ExactInputSingleParams memory params =
-          ISwapRouter.ExactInputSingleParams({
-              tokenIn: _ENTRY,
-              tokenOut: token,
-              fee: poolFee,
-              recipient: address(this),
-              deadline: block.timestamp,
-              amountIn: amountTokenInForSwap,
-              amountOutMinimum: 0,
-              sqrtPriceLimitX96: 0
-          });
-        ISwapRouter(router).exactInputSingle(params);
+        if (!isOdos) {
+          IERC20(_ENTRY).safeIncreaseAllowance(pool, amountTokenInForSwap);
+          ISwapRouter.ExactInputSingleParams memory params =
+            ISwapRouter.ExactInputSingleParams({
+                tokenIn: _ENTRY,
+                tokenOut: token,
+                fee: poolFee,
+                recipient: address(this),
+                deadline: block.timestamp,
+                amountIn: amountTokenInForSwap,
+                amountOutMinimum: 0,
+                sqrtPriceLimitX96: 0
+            });
+          ISwapRouter(router).exactInputSingle(params);
+        } else {
+          address executor = _swapRecords[token].executor;
+          bytes memory pathDefinition = _swapRecords[token].pathDefinition;
 
+          ISwapOdosRouter.swapTokenInfo memory tokenInfo = ISwapOdosRouter.swapTokenInfo({
+            inputToken: _ENTRY,
+            inputAmount: amountTokenInForSwap,
+            inputReceiver: address(this),
+            outputToken: token,
+            outputQuote: 0,
+            outputMin: 0,
+            outputReceiver: address(this)
+          });
+          ISwapOdosRouter(router).swap(tokenInfo, pathDefinition, executor, 0);
+        }
         uint tokenBalanceAfter = IERC20(token).balanceOf(address(this));
         balancesTokens[i] = tokenBalanceAfter - tokenBalanceBefore;
       } else {
