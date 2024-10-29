@@ -40,9 +40,6 @@ contract BaseStaticPool is ERC20, Ownable2Step, ReentrancyGuard {
     address router;
     uint24 poolFee;
     address pool;
-    bool isOdos;
-    address executor;
-    bytes pathDefinition;
   }
 
   address[] public _tokens;
@@ -116,7 +113,7 @@ contract BaseStaticPool is ERC20, Ownable2Step, ReentrancyGuard {
     emit SetFees(entryFee, exitFee, baseFee, feeManager);
   }
 
-  function bind(address token, uint weight, address factory, address router, uint24 poolFee, bool isOdos, address executor, bytes memory pathDefinition)
+  function bind(address token, uint weight, address factory, address router, uint24 poolFee)
     public
     onlyOwner
     checkPoolParams(token, factory, router)
@@ -136,10 +133,7 @@ contract BaseStaticPool is ERC20, Ownable2Step, ReentrancyGuard {
       factory: factory,
       router: router,
       poolFee: poolFee,
-      pool: pool,
-      isOdos: isOdos,
-      executor: executor,
-      pathDefinition: pathDefinition
+      pool: pool
     });
     _tokens.push(token);
     (, _totalWeight) = Math.tryAdd(_totalWeight, weight);

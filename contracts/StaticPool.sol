@@ -55,7 +55,6 @@ contract StaticPool is BaseStaticPool {
         address token = _tokens[i];
         address router = _swapRecords[token].router;
         uint24 poolFee = _swapRecords[token].poolFee;
-        bool isOdos = _swapRecords[token].isOdos;
         uint amountTokenInForSwap = Math.mulDiv(amountWithoutFee, _records[token].balance, totalSupply());
 
         if (amountTokenInForSwap > 0) {
@@ -68,14 +67,7 @@ contract StaticPool is BaseStaticPool {
                 recipient: address(this)
             });
 
-            uint amountOut;
-            if (!isOdos) {
-                amountOut = SwapLibrary.performUniswapV3Swap(ISwapRouter(router), params);
-            } else {
-                address executor = _swapRecords[token].executor;
-                bytes memory pathDefinition = _swapRecords[token].pathDefinition;
-                amountOut = SwapLibrary.performOdosSwap(ISwapOdosRouter(router), params, executor, pathDefinition);
-            }
+            uint amountOut = SwapLibrary.performUniswapV3Swap(ISwapRouter(router), params);
             balancesTokens[i] = amountOut;
         } else {
             balancesTokens[i] = 0;
@@ -147,7 +139,6 @@ contract StaticPool is BaseStaticPool {
       address router = _swapRecords[token].router;
       address pool = _swapRecords[token].pool;
       uint24 poolFee = _swapRecords[token].poolFee;
-      bool isOdos = _swapRecords[token].isOdos;
       uint weight = _records[token].weight;
 
       if (weight != 0) {
@@ -156,35 +147,20 @@ contract StaticPool is BaseStaticPool {
         uint amountTokenInForSwap = Math.mulDiv(amountWithoutFee, weight, _totalWeight);
 
         IERC20(_ENTRY).safeIncreaseAllowance(router, amountTokenInForSwap);
-        if (!isOdos) {
-          IERC20(_ENTRY).safeIncreaseAllowance(pool, amountTokenInForSwap);
-          ISwapRouter.ExactInputSingleParams memory params =
-            ISwapRouter.ExactInputSingleParams({
-                tokenIn: _ENTRY,
-                tokenOut: token,
-                fee: poolFee,
-                recipient: address(this),
-                deadline: block.timestamp,
-                amountIn: amountTokenInForSwap,
-                amountOutMinimum: 0,
-                sqrtPriceLimitX96: 0
-            });
-          ISwapRouter(router).exactInputSingle(params);
-        } else {
-          address executor = _swapRecords[token].executor;
-          bytes memory pathDefinition = _swapRecords[token].pathDefinition;
-
-          ISwapOdosRouter.swapTokenInfo memory tokenInfo = ISwapOdosRouter.swapTokenInfo({
-            inputToken: _ENTRY,
-            inputAmount: amountTokenInForSwap,
-            inputReceiver: address(this),
-            outputToken: token,
-            outputQuote: 0,
-            outputMin: 0,
-            outputReceiver: address(this)
+        IERC20(_ENTRY).safeIncreaseAllowance(pool, amountTokenInForSwap);
+        ISwapRouter.ExactInputSingleParams memory params =
+          ISwapRouter.ExactInputSingleParams({
+              tokenIn: _ENTRY,
+              tokenOut: token,
+              fee: poolFee,
+              recipient: address(this),
+              deadline: block.timestamp,
+              amountIn: amountTokenInForSwap,
+              amountOutMinimum: 0,
+              sqrtPriceLimitX96: 0
           });
-          ISwapOdosRouter(router).swap(tokenInfo, pathDefinition, executor, 0);
-        }
+        ISwapRouter(router).exactInputSingle(params);
+        
         uint tokenBalanceAfter = IERC20(token).balanceOf(address(this));
         balancesTokens[i] = tokenBalanceAfter - tokenBalanceBefore;
       } else {
