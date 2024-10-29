@@ -41,27 +41,6 @@ library SwapLibrary {
         amountOut = router.exactInputSingle(routerParams);
     }
 
-    function performOdosSwap(
-        ISwapOdosRouter router,
-        SwapParams memory params,
-        address executor,
-        bytes memory pathDefinition
-    ) internal returns (uint amountOut) {
-        IERC20(params.tokenIn).safeIncreaseAllowance(address(router), params.amountIn);
-
-        ISwapOdosRouter.swapTokenInfo memory tokenInfo = ISwapOdosRouter.swapTokenInfo({
-            inputToken: params.tokenIn,
-            inputAmount: params.amountIn,
-            inputReceiver: address(this),
-            outputToken: params.tokenOut,
-            outputQuote: 0,
-            outputMin: params.amountOutMinimum,
-            outputReceiver: params.recipient
-        });
-
-        amountOut = router.swap(tokenInfo, pathDefinition, executor, 0);
-    }
-
     function getAmountOut(
         address pool,
         address tokenIn,

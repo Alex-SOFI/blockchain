@@ -187,25 +187,6 @@ contract BaseStaticPool is ERC20, Ownable2Step, ReentrancyGuard {
     }
   }
 
-  function getIndexBalancePrice() view public returns(uint amountOut) {
-    for (uint i = 0; i < _tokens.length; i++) {
-      address token = _tokens[i];
-      uint balanceToken = IERC20(token).balanceOf(address(this));
-
-      if (balanceToken > 0) {
-        address factory = _swapRecords[token].factory;
-        uint24 poolFee = _swapRecords[token].poolFee;
-        
-        address pool = IUniswapV3Factory(factory).getPool(
-          address(_ENTRY),
-          token,
-          poolFee
-        );
-        amountOut += getAmountOut(pool, token, balanceToken);
-      }
-    }
-  }
-
   function getAmountFee(uint amountIn, uint fee) view public returns(uint) {
     return Math.mulDiv(amountIn, fee, _baseFee);
   }

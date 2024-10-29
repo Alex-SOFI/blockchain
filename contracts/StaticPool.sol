@@ -3,6 +3,7 @@ pragma solidity 0.8.20;
 pragma abicoder v2;
 
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/interfaces/IERC4626.sol";
 
 import "./BaseStaticPool.sol";
 import "./SwapLibrary.sol";
@@ -11,6 +12,11 @@ contract StaticPool is BaseStaticPool {
   using SafeERC20 for IERC20;
   using SwapLibrary for ISwapRouter;
   using SwapLibrary for ISwapOdosRouter;
+
+  // Add vault mapping
+  mapping(address => address) public tokenVaults;
+
+  event VaultSet(address indexed token, address indexed vault);
 
   constructor(
     address ENTRY,
@@ -23,6 +29,14 @@ contract StaticPool is BaseStaticPool {
     uint tvlFee
   ) BaseStaticPool(ENTRY, WETH, entryFee, exitFee, baseFee, feeManager, blocksPerYear, tvlFee) {}
 
+  // Add function to set vault for a token
+  function setVault(address token, address vault) external onlyOwner {
+      require(vault != address(0), "StaticPool: vault cannot be zero address");
+      require(IERC20(token).approve(vault, type(uint256).max), "StaticPool: vault approval failed");
+      tokenVaults[token] = vault;
+      emit VaultSet(token, vault);
+  }
+
   function exitPool(uint poolAmountIn, uint[] memory minAmountOut) private {
     uint poolTotal = totalSupply();
 
@@ -32,6 +46,13 @@ contract StaticPool is BaseStaticPool {
       uint tokenAmountOut = Math.mulDiv(poolAmountIn, balance, poolTotal);
 
       require(tokenAmountOut >= minAmountOut[i], "ERR_LIMIT_OUT");
+
+      address vault = tokenVaults[token];
+      if (vault != address(0)) {
+        uint shares = IERC4626(vault).balanceOf(address(this));
+        uint assetsToWithdraw = Math.mulDiv(shares, tokenAmountOut, balance);
+        IERC4626(vault).withdraw(assetsToWithdraw, address(this), address(this));
+      }
 
       (,uint updatedBalance) = Math.trySub(_records[token].balance, tokenAmountOut);
       _records[token].balance = updatedBalance;
@@ -118,6 +139,37 @@ contract StaticPool is BaseStaticPool {
     _mint(receiver, poolAmountOut);
   }
 
+  // Override getIndexBalancePrice to account for vault shares
+  function getIndexBalancePrice() public view returns(uint amountOut) {
+      for (uint i = 0; i < _tokens.length; i++) {
+          address token = _tokens[i];
+          address vault = tokenVaults[token];
+          uint shareBalance;
+          uint tokenBalance;
+          
+          if (vault != address(0)) {
+              // If token has a vault, calculate underlying token amount from shares
+              shareBalance = IERC4626(vault).balanceOf(address(this));
+              tokenBalance = IERC4626(vault).convertToAssets(shareBalance);
+          } else {
+              // If no vault, use direct token balance
+              tokenBalance = IERC20(token).balanceOf(address(this));
+          }
+
+          if (tokenBalance > 0) {
+              address factory = _swapRecords[token].factory;
+              uint24 poolFee = _swapRecords[token].poolFee;
+              
+              address pool = IUniswapV3Factory(factory).getPool(
+                  address(_ENTRY),
+                  token,
+                  poolFee
+              );
+              amountOut += getAmountOut(pool, token, tokenBalance);
+          }
+      }
+  }
+
   function mint(address receiver) public payable nonReentrant {
     uint tokenAmountIn = msg.value;
 
@@ -144,6 +196,16 @@ contract StaticPool is BaseStaticPool {
       if (weight != 0) {
         uint tokenBalanceBefore = IERC20(token).balanceOf(address(this));
 
+        address vault = tokenVaults[token];
+                
+        if (vault != address(0)) {
+          tokenBalanceBefore = IERC4626(vault).convertToAssets(
+              IERC4626(vault).balanceOf(address(this))
+          );
+        } else {
+          tokenBalanceBefore = IERC20(token).balanceOf(address(this));
+        }
+
         uint amountTokenInForSwap = Math.mulDiv(amountWithoutFee, weight, _totalWeight);
 
         IERC20(_ENTRY).safeIncreaseAllowance(router, amountTokenInForSwap);
@@ -160,9 +222,20 @@ contract StaticPool is BaseStaticPool {
               sqrtPriceLimitX96: 0
           });
         ISwapRouter(router).exactInputSingle(params);
-        
-        uint tokenBalanceAfter = IERC20(token).balanceOf(address(this));
-        balancesTokens[i] = tokenBalanceAfter - tokenBalanceBefore;
+
+        // After swap, deposit into vault if available
+        if (vault != address(0)) {
+          uint swappedAmount = IERC20(token).balanceOf(address(this));
+          IERC4626(vault).deposit(swappedAmount, address(this));
+          
+          uint tokenBalanceAfter = IERC4626(vault).convertToAssets(
+              IERC4626(vault).balanceOf(address(this))
+          );
+          balancesTokens[i] = tokenBalanceAfter - tokenBalanceBefore;
+        } else {
+          uint tokenBalanceAfter = IERC20(token).balanceOf(address(this));
+          balancesTokens[i] = tokenBalanceAfter - tokenBalanceBefore;
+        }
       } else {
         balancesTokens[i] = 0;
       }
