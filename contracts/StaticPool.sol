@@ -8,15 +8,43 @@ import "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import "./BaseStaticPool.sol";
 import "./SwapLibrary.sol";
 
+interface ISwapRouterCustom {
+  struct ExactInputSingleParams {
+      address tokenIn;
+      address tokenOut;
+      uint24 fee;
+      address recipient;
+      uint256 amountIn;
+      uint256 amountOutMinimum;
+      uint160 sqrtPriceLimitX96;
+  }
+
+  /// @notice Swaps `amountIn` of one token for as much as possible of another token
+  /// @param params The parameters necessary for the swap, encoded as `ExactInputSingleParams` in calldata
+  /// @return amountOut The amount of the received token
+  function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
+}
+
 contract StaticPool is BaseStaticPool {
   using SafeERC20 for IERC20;
-  using SwapLibrary for ISwapRouter;
-  using SwapLibrary for ISwapOdosRouter;
+  using SwapLibrary for ISwapRouterCustom;
+
+  struct ExactInputSingleParams {
+    address tokenIn;
+    address tokenOut;
+    uint24 fee;
+    address recipient;
+    uint256 amountIn;
+    uint256 amountOutMinimum;
+    uint160 sqrtPriceLimitX96;
+  }
 
   // Add vault mapping
   mapping(address => address) public tokenVaults;
 
   event VaultSet(address indexed token, address indexed vault);
+  event RewardsReinvested(address indexed token, address indexed vault, uint256 rewardAmount);
+  event CompoundFailed(address indexed token, address indexed vault, string reason);
 
   constructor(
     address ENTRY,
@@ -60,7 +88,7 @@ contract StaticPool is BaseStaticPool {
 
     uint feeAmount = calculateTvlFees();
     accTVLFees = accTVLFees + feeAmount;
-    _lastFeeBlock = _arbSys.arbBlockNumber();
+    _lastFeeBlock = block.number;
 
     _burn(msg.sender, poolAmountIn);
   }
@@ -134,7 +162,7 @@ contract StaticPool is BaseStaticPool {
     
     uint feeAmount = calculateTvlFees();
     accTVLFees = accTVLFees + feeAmount;
-    _lastFeeBlock = _arbSys.arbBlockNumber();
+    _lastFeeBlock = block.number;
 
     _mint(receiver, poolAmountOut);
   }
@@ -210,18 +238,17 @@ contract StaticPool is BaseStaticPool {
 
         IERC20(_ENTRY).safeIncreaseAllowance(router, amountTokenInForSwap);
         IERC20(_ENTRY).safeIncreaseAllowance(pool, amountTokenInForSwap);
-        ISwapRouter.ExactInputSingleParams memory params =
-          ISwapRouter.ExactInputSingleParams({
+        ISwapRouterCustom.ExactInputSingleParams memory params =
+          ISwapRouterCustom.ExactInputSingleParams({
               tokenIn: _ENTRY,
               tokenOut: token,
               fee: poolFee,
               recipient: address(this),
-              deadline: block.timestamp,
               amountIn: amountTokenInForSwap,
               amountOutMinimum: 0,
               sqrtPriceLimitX96: 0
           });
-        ISwapRouter(router).exactInputSingle(params);
+        ISwapRouterCustom(router).exactInputSingle(params);
 
         // After swap, deposit into vault if available
         if (vault != address(0)) {
@@ -249,7 +276,7 @@ contract StaticPool is BaseStaticPool {
 
     (, uint total) = Math.tryAdd(feeAmount, accTVLFees);
     _mint(_feeManager, total);
-    _lastFeeBlock = _arbSys.arbBlockNumber();
+    _lastFeeBlock = block.number;
     accTVLFees = 0;
   }
 
@@ -275,5 +302,59 @@ contract StaticPool is BaseStaticPool {
     (,uint amountWithoutFee) = Math.trySub(tokenAmountIn, amountFee);
 
     return Math.mulDiv(amountWithoutFee, indexAmount, _totalSupply);
+  }
+
+  function reinvestVaultRewards(address[] calldata tokens) 
+      external 
+      nonReentrant 
+      returns (uint256[] memory amounts) 
+  {
+      require(tokens.length > 0, "StaticPool: empty tokens array");
+      amounts = new uint256[](tokens.length);
+
+      for (uint256 i = 0; i < tokens.length; i++) {
+          address token = tokens[i];
+          address vault = tokenVaults[token];
+          
+          require(vault != address(0), "StaticPool: vault not set");
+
+          try this._reinvestSingleVault(token, vault) returns (uint256 reinvestedAmount) {
+              amounts[i] = reinvestedAmount;
+              emit RewardsReinvested(token, vault, reinvestedAmount);
+          } catch Error(string memory reason) {
+              emit CompoundFailed(token, vault, reason);
+              amounts[i] = 0;
+          }
+      }
+
+      return amounts;
+  }
+
+  function _reinvestSingleVault(address token, address vault) 
+    external 
+    returns (uint256 reinvestedAmount) 
+  {
+    require(msg.sender == address(this), "StaticPool: only internal call");
+    
+    IERC4626 vaultContract = IERC4626(vault);
+    
+    uint256 actualTokenBalance = IERC20(token).balanceOf(address(this));
+    
+    if (actualTokenBalance > 0) {
+        reinvestedAmount = actualTokenBalance;
+        
+        uint256 allowance = IERC20(token).allowance(address(this), vault);
+        if (allowance < actualTokenBalance) {
+            IERC20(token).approve(vault, type(uint256).max);
+        }
+        
+        vaultContract.deposit(actualTokenBalance, address(this));
+        
+        _records[token].balance = vaultContract.convertToAssets(
+            vaultContract.balanceOf(address(this))
+        );
+    }
+    
+    return reinvestedAmount;
   }
 }
