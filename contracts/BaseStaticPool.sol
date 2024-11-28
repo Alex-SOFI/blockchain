@@ -58,7 +58,6 @@ contract BaseStaticPool is ERC20, Ownable2Step, ReentrancyGuard {
   uint public _lastFeeBlock;
   uint public _blocksPerYear;
   uint public accTVLFees = 0;
-  ArbSys constant public _arbSys = ArbSys(0x0000000000000000000000000000000000000064);
 
   event SetFees(uint entryFee, uint exitFee, uint baseFee, address feeManager);
 
@@ -106,7 +105,7 @@ contract BaseStaticPool is ERC20, Ownable2Step, ReentrancyGuard {
     _feeManager = feeManager;
     _exitFee = exitFee;
     _tvlFee = tvlFee;
-    _lastFeeBlock = _arbSys.arbBlockNumber();
+    _lastFeeBlock = block.number;
     _blocksPerYear = blocksPerYear;
     _WETH = WETH;
 
@@ -167,7 +166,7 @@ contract BaseStaticPool is ERC20, Ownable2Step, ReentrancyGuard {
 
     uint feeAmount = calculateTvlFees();
     accTVLFees = accTVLFees + feeAmount;
-    _lastFeeBlock = _arbSys.arbBlockNumber();
+    _lastFeeBlock = block.number;
 
     emit SetFees(entryFee, exitFee, baseFee, feeManager);
   }
@@ -192,7 +191,7 @@ contract BaseStaticPool is ERC20, Ownable2Step, ReentrancyGuard {
   }
 
   function calculateTvlFees() public view returns (uint) {
-    uint diffBlocks = _arbSys.arbBlockNumber() - _lastFeeBlock;
+    uint diffBlocks = block.number - _lastFeeBlock;
     (, uint nominator) = Math.tryMul(totalSupply(), _tvlFee);
     (, uint denominator) = Math.tryMul(_blocksPerYear, _baseFee);
     (, uint tokensPerBlock) = Math.tryDiv(nominator, denominator);
