@@ -104,14 +104,30 @@ contract StaticPool is BaseStaticPool {
         address token = _tokens[i];
         address router = _swapRecords[token].router;
         uint24 poolFee = _swapRecords[token].poolFee;
-        uint amountTokenInForSwap = Math.mulDiv(amountWithoutFee, _records[token].balance, totalSupply());
+        uint bBalance = normalizeAmount(_records[token].balance, IERC20Metadata(token).decimals());
+        uint amountTokenInForSwap = Math.mulDiv(amountWithoutFee, bBalance, totalSupply());
+        address vault = tokenVaults[token];
+        
+        if (vault != address(0) && amountTokenInForSwap > 0) {
+            IERC4626 vaultContract = IERC4626(vault);
+            uint256 totalShares = vaultContract.balanceOf(address(this));
+            uint256 sharesToWithdraw = Math.mulDiv(totalShares, amountTokenInForSwap, bBalance);
+            
+            // Выводим токены из vault в контракт пула
+            vaultContract.redeem(
+                sharesToWithdraw,
+                address(this),
+                address(this)
+            );
+        }
 
+        uint denormalizedAmount = denormalizeAmount(amountTokenInForSwap, IERC20Metadata(token).decimals());
         if (amountTokenInForSwap > 0) {
             SwapLibrary.SwapParams memory params = SwapLibrary.SwapParams({
                 tokenIn: token,
                 tokenOut: _ENTRY,
                 fee: poolFee,
-                amountIn: amountTokenInForSwap,
+                amountIn: denormalizedAmount,
                 amountOutMinimum: 0,
                 recipient: address(this)
             });
@@ -356,5 +372,24 @@ contract StaticPool is BaseStaticPool {
     }
     
     return reinvestedAmount;
+  }
+
+  function normalizeAmount(uint256 amount, uint256 amountDecimals) internal pure returns (uint256 normalizedAmount) {
+    uint256 standartDecimals = 18;
+    if (amountDecimals < standartDecimals) {
+      (, normalizedAmount) = Math.tryMul(amount, 10 ** (standartDecimals - amountDecimals));
+    } else {
+      normalizedAmount = amount;
+    }
+  }
+
+  function denormalizeAmount(uint256 amount, uint256 tokenDecimals) internal pure returns (uint256) {
+    uint256 standardDecimals = 18;
+    if (tokenDecimals < standardDecimals) {
+      uint256 divisor = 10 ** (standardDecimals - tokenDecimals);
+      return amount / divisor; // Простое деление, так как Math.mulDiv не подходит для деления
+    } else {
+      return amount;
+    }
   }
 }
