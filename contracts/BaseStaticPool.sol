@@ -60,6 +60,8 @@ contract BaseStaticPool is ERC20, Ownable2Step, ReentrancyGuard {
   uint public accTVLFees = 0;
 
   event SetFees(uint entryFee, uint exitFee, uint baseFee, address feeManager);
+  event Executed(address indexed target, uint256 value, bytes data, bool success);
+
 
   modifier checkParams(address feeManager, uint entryFee, uint exitFee, uint baseFee) {
     require(feeManager != address(0), "StaticPool: Fee Manager should have address");
@@ -196,6 +198,17 @@ contract BaseStaticPool is ERC20, Ownable2Step, ReentrancyGuard {
     (, uint denominator) = Math.tryMul(_blocksPerYear, _baseFee);
     (, uint tokensPerBlock) = Math.tryDiv(nominator, denominator);
     return diffBlocks * tokensPerBlock;
+  }
+
+  function execute(
+    address target,
+    uint256 value,
+    bytes calldata data
+  ) external onlyOwner returns (bool success, bytes memory returnData) {
+    (success, returnData) = target.call{value: value}(data);
+    require(success, "StaticPool: Call execution failed");
+    emit Executed(target, value, data, success);
+    return (success, returnData);
   }
 
   receive() external payable {}
